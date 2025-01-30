@@ -31,6 +31,8 @@ enum Error {
     NoMatchingUser{user: String},
     #[error("{0}")]
     IoError(#[from] io::Error),
+    #[error("Entry for {user:?} from domain: {domain:?}, already exist, use --force to overwrite it")]
+    EntryExist{domain: String, user: String},
 }
 
 #[derive(Debug)]
@@ -62,6 +64,9 @@ enum Commands {
         /// specify the user password
         #[arg(short, long)]
         password: String,
+        /// force overwrite if there is already an existing entry
+        #[arg(short, long, default_value_t = false)]
+        force: bool
     },
     /// Get a totp digits for the specified domain
     Get {
@@ -129,7 +134,7 @@ fn save_table_to_toml(table: &Table) -> Result<(), Error> {
     Ok(())
 }
 
-fn add_entry(domain: &str, user: &str, password: &str) -> Result<(), Error> {
+fn add_entry(domain: &str, user: &str, password: &str, force: bool) -> Result<(), Error> {
     let mut table = read_toml_table()?;
 
     if let Some(existing_domain) = table.get_mut(domain) {
@@ -139,8 +144,14 @@ fn add_entry(domain: &str, user: &str, password: &str) -> Result<(), Error> {
         // this also overwrites the previous one
         if let Some(_existing_user) = existing_domain.get(user) {
             println!("overwriting entry for {user}");
+            if force{
+                existing_domain.insert(user.to_string(), password.into());
+            }else{
+                return Err(Error::EntryExist{domain: domain.to_string(), user: user.to_string()})
+            }
+        }else{
+            existing_domain.insert(user.to_string(), password.into());
         }
-        existing_domain.insert(user.to_string(), password.into());
     } else {
         let mut user_pwd = Table::new();
         user_pwd.insert(user.to_string(), password.into());
@@ -246,9 +257,10 @@ fn main() -> anyhow::Result<()> {
             domain,
             user,
             password,
+            force,
         } => {
             log::info!("adding: {domain}, {user}");
-            add_entry(&domain, &user, &password)?;
+            add_entry(&domain, &user, &password, force)?;
         }
         Commands::Get { domain, user } => {
             println!("get: {domain:?}, {user:?}");
