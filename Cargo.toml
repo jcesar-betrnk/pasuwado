@@ -1,0 +1,12 @@
+[package]
+name = "pasuwado"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.26", features = ["derive"] }
+clipboard-rs = "0.2.2"
+directories = "6.0.0"
+toml = "0.8.19"
+anyhow = "1.0.95"
+serde = { version = "1.0.217", features = ["derive"] }
