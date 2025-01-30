@@ -107,7 +107,7 @@ fn add_entry(domain: &str, user: &str, password: &str) -> anyhow::Result<()> {
             panic!("expecting a table");
         };
         // this also overwrites the previous one
-        if let Some(_existing_user) = existing_domain.get(user){
+        if let Some(_existing_user) = existing_domain.get(user) {
             println!("overwriting entry for {user}");
         }
         existing_domain.insert(user.to_string(), password.into());
@@ -117,6 +117,71 @@ fn add_entry(domain: &str, user: &str, password: &str) -> anyhow::Result<()> {
         table.insert(domain.to_string(), user_pwd.into());
     }
     save_table_to_toml(&table)?;
+    Ok(())
+}
+
+fn copy_password_to_clipboard(
+    domain: &Option<String>,
+    user: &Option<String>,
+) -> anyhow::Result<()> {
+    let table = read_toml_table()?;
+    if let Some(domain) = domain {
+        let user_list = table.get(domain);
+        match user_list {
+            Some(user_list) => {
+                let Value::Table(user_list) = user_list else {
+                    panic!("must be a string");
+                };
+                if let Some(user) = user {
+                    if let Some(pwd) = user_list.get(user) {
+                        let Value::String(pwd) = pwd else {
+                            panic!("pwd should be a string!");
+                        };
+                        write_to_clipboard(&pwd)?;
+                        println!("{pwd}");
+                    } else {
+                        println!("No entry for user: {user:?} under domain: {domain:?}");
+                    }
+                } else {
+                    if user_list.len() == 1 {
+                        let (user, pwd) = user_list.iter().next().unwrap();
+                        println!("user: {user:?}, pwd: {pwd:?}");
+                    } else {
+                        println!("There are multiple entries for domain: {domain:?}, you need to specify which user:");
+                        for (user, _pwd) in user_list {
+                            println!("{user}");
+                        }
+                    }
+                }
+            }
+            None => {
+                println!("No entry for domain: {domain:?}");
+            }
+        }
+    } else {
+        // read all the table and see if the user match
+        if let Some(user) = user {
+            let mut found = None;
+            // use the user that matches the first entry in the first domain encountered
+            for (domain, user_list) in table {
+                if let Some(pwd) = user_list.get(user) {
+                    let Value::String(pwd) = pwd else {
+                        panic!("password must be string");
+                    };
+                    found = Some((domain.to_string(), user.to_string(), pwd.to_string()));
+                }
+            }
+            if let Some((domain, user, pwd)) = found {
+                println!("pwd: {pwd}");
+                println!("found: {user} with pwd: {pwd:?} from domain: {domain:?}");
+                write_to_clipboard(&pwd)?;
+            } else {
+                println!("No entry for user: {user:?}");
+            }
+        } else {
+            println!("You need to specify either a domain or a username")
+        }
+    }
     Ok(())
 }
 
@@ -133,6 +198,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Get { domain, user } => {
             println!("get: {domain:?}, {user:?}");
+            copy_password_to_clipboard(&domain, &user)?;
         }
         Commands::List => {
             let table = read_toml_table()?;
