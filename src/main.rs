@@ -4,13 +4,43 @@ use clap::{Parser, Subcommand};
 use clipboard_rs::{Clipboard, ClipboardContext};
 use directories::ProjectDirs;
 use std::fs;
+use std::io;
 use std::io::Write;
 use std::path::PathBuf;
+use thiserror::Error;
 use toml::{Table, Value};
 
 const QUAL: &str = "org";
 const ORG: &str = "pasuwado";
 const APP: &str = env!("CARGO_PKG_NAME");
+
+#[derive(Error, Debug)]
+enum Error {
+    #[error("You need to specify either a domain or a user")]
+    NoneSpecified,
+    #[error("There are multiple entries for the domain {domain:?}, you need to specify which user:\n{}", user_list.join("\n"))]
+    MultipleMatchingEntry {
+        domain: String,
+        user_list: Vec<String>,
+    },
+    #[error("No entry for user: {user:?} under domain: {domain:?}")]
+    NoMatch { user: String, domain: String },
+    #[error("No entry for domain: {domain:?}")]
+    NoMatchingDomain{domain: String},
+    #[error("No entry for user: {user:?}")]
+    NoMatchingUser{user: String},
+    #[error("{0}")]
+    IoError(#[from] io::Error),
+}
+
+#[derive(Debug)]
+struct Entry {
+    #[allow(unused)]
+    domain: String,
+    #[allow(unused)]
+    user: String,
+    pwd: String,
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -47,7 +77,7 @@ enum Commands {
     List,
 }
 
-fn config_file() -> anyhow::Result<PathBuf> {
+fn config_file() -> io::Result<PathBuf> {
     let proj_dirs = ProjectDirs::from(QUAL, ORG, APP).expect("Could not open config file");
     let config_dir = proj_dirs.config_dir();
     let mut filename = config_dir.to_path_buf();
@@ -55,7 +85,7 @@ fn config_file() -> anyhow::Result<PathBuf> {
     Ok(filename)
 }
 
-fn write_to_clipboard(content: &str) -> anyhow::Result<()> {
+fn write_to_clipboard(content: &str) -> Result<(), Error> {
     let ctx = ClipboardContext::new().expect("Could not get access clipboard");
     ctx.set_text(content.to_string())
         .expect("Could not set the text in the clipboard");
@@ -64,7 +94,7 @@ fn write_to_clipboard(content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn read_toml_table() -> anyhow::Result<Table> {
+fn read_toml_table() -> Result<Table, Error> {
     let filename = config_file()?;
     if let Ok(toml_content) = fs::read_to_string(&filename) {
         let toml_value: Result<Value, _> = toml::from_str(&toml_content);
@@ -77,7 +107,7 @@ fn read_toml_table() -> anyhow::Result<Table> {
     }
 }
 
-fn ensure_config_dir_exists() -> anyhow::Result<()> {
+fn ensure_config_dir_exists() -> Result<(), Error> {
     let config_file = config_file()?;
     let prefix = config_file
         .parent()
@@ -90,7 +120,7 @@ fn ensure_config_dir_exists() -> anyhow::Result<()> {
     }
 }
 
-fn save_table_to_toml(table: &Table) -> anyhow::Result<()> {
+fn save_table_to_toml(table: &Table) -> Result<(), Error> {
     let content = toml::to_string(table).unwrap();
     let config_file = config_file()?;
     ensure_config_dir_exists()?;
@@ -99,7 +129,7 @@ fn save_table_to_toml(table: &Table) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn add_entry(domain: &str, user: &str, password: &str) -> anyhow::Result<()> {
+fn add_entry(domain: &str, user: &str, password: &str) -> Result<(), Error> {
     let mut table = read_toml_table()?;
 
     if let Some(existing_domain) = table.get_mut(domain) {
@@ -120,10 +150,7 @@ fn add_entry(domain: &str, user: &str, password: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn copy_password_to_clipboard(
-    domain: &Option<String>,
-    user: &Option<String>,
-) -> anyhow::Result<()> {
+fn find_entry(domain: &Option<String>, user: &Option<String>) -> Result<Entry, Error> {
     let table = read_toml_table()?;
     if let Some(domain) = domain {
         let user_list = table.get(domain);
@@ -137,55 +164,82 @@ fn copy_password_to_clipboard(
                         let Value::String(pwd) = pwd else {
                             panic!("pwd should be a string!");
                         };
-                        write_to_clipboard(&pwd)?;
-                        println!("{pwd}");
+                        Ok(Entry {
+                            domain: domain.to_string(),
+                            user: user.to_string(),
+                            pwd: pwd.to_string(),
+                        })
                     } else {
-                        println!("No entry for user: {user:?} under domain: {domain:?}");
+                        Err(Error::NoMatch {
+                            user: user.to_string(),
+                            domain: domain.to_string(),
+                        })
                     }
                 } else {
                     if user_list.len() == 1 {
                         let (user, pwd) = user_list.iter().next().unwrap();
-                        println!("user: {user:?}, pwd: {pwd:?}");
+                        let Value::String(pwd) = pwd else {
+                            panic!("pwd should be a string!");
+                        };
+                        Ok(Entry {
+                            domain: domain.to_string(),
+                            user: user.to_string(),
+                            pwd: pwd.to_string(),
+                        })
                     } else {
-                        println!("There are multiple entries for domain: {domain:?}, you need to specify which user:");
-                        for (user, _pwd) in user_list {
-                            println!("{user}");
-                        }
+                        Err(Error::MultipleMatchingEntry {
+                            domain: domain.to_string(),
+                            user_list: user_list.iter().map(|(user, _)| user.to_string()).collect(),
+                        })
                     }
                 }
             }
             None => {
-                println!("No entry for domain: {domain:?}");
+                Err(Error::NoMatchingDomain{domain: domain.to_string()})
             }
         }
     } else {
         // read all the table and see if the user match
         if let Some(user) = user {
-            let mut found = None;
             // use the user that matches the first entry in the first domain encountered
             for (domain, user_list) in table {
                 if let Some(pwd) = user_list.get(user) {
                     let Value::String(pwd) = pwd else {
                         panic!("password must be string");
                     };
-                    found = Some((domain.to_string(), user.to_string(), pwd.to_string()));
+                    return Ok(Entry {
+                        domain: domain.to_string(),
+                        user: user.to_string(),
+                        pwd: pwd.to_string(),
+                    });
                 }
             }
-            if let Some((domain, user, pwd)) = found {
-                println!("pwd: {pwd}");
-                println!("found: {user} with pwd: {pwd:?} from domain: {domain:?}");
-                write_to_clipboard(&pwd)?;
-            } else {
-                println!("No entry for user: {user:?}");
-            }
+            Err(Error::NoMatchingUser{user: user.to_string()})
         } else {
-            println!("You need to specify either a domain or a username")
+            println!("You need to specify either a domain or a username");
+            Err(Error::NoneSpecified)
+        }
+    }
+}
+
+fn copy_password_to_clipboard(
+    domain: &Option<String>,
+    user: &Option<String>,
+) -> anyhow::Result<()> {
+    match find_entry(domain, user){
+        Ok(entry) => {
+            println!("found entry: {entry:?}");
+            write_to_clipboard(&entry.pwd)?;
+        }
+        Err(e) => {
+            println!("Error: {e}");
         }
     }
     Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
+    pretty_env_logger::init();
     let args = Args::parse();
     match args.command {
         Commands::Add {
@@ -193,7 +247,7 @@ fn main() -> anyhow::Result<()> {
             user,
             password,
         } => {
-            println!("adding: {domain}, {user}, {password}");
+            log::info!("adding: {domain}, {user}");
             add_entry(&domain, &user, &password)?;
         }
         Commands::Get { domain, user } => {
