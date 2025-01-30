@@ -9,6 +9,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use thiserror::Error;
 use toml::{Table, Value};
+use std::env;
+#[macro_use] extern crate log;
 
 const QUAL: &str = "org";
 const ORG: &str = "pasuwado";
@@ -143,8 +145,8 @@ fn add_entry(domain: &str, user: &str, password: &str, force: bool) -> Result<()
         };
         // this also overwrites the previous one
         if let Some(_existing_user) = existing_domain.get(user) {
-            println!("overwriting entry for {user}");
             if force{
+                warn!("Overwriting entry for {user:?} in domain: {domain:?}");
                 existing_domain.insert(user.to_string(), password.into());
             }else{
                 return Err(Error::EntryExist{domain: domain.to_string(), user: user.to_string()})
@@ -243,13 +245,16 @@ fn copy_password_to_clipboard(
             write_to_clipboard(&entry.pwd)?;
         }
         Err(e) => {
-            println!("Error: {e}");
+            error!("Error: {e}");
         }
     }
     Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "warn")
+    }
     pretty_env_logger::init();
     let args = Args::parse();
     match args.command {
@@ -259,17 +264,22 @@ fn main() -> anyhow::Result<()> {
             password,
             force,
         } => {
-            log::info!("adding: {domain}, {user}");
+            info!("adding: {domain}, {user}");
             add_entry(&domain, &user, &password, force)?;
         }
         Commands::Get { domain, user } => {
-            println!("get: {domain:?}, {user:?}");
+            info!("get: {domain:?}, {user:?}");
             copy_password_to_clipboard(&domain, &user)?;
         }
         Commands::List => {
             let table = read_toml_table()?;
-            for (key, _) in table {
-                println!("{key}");
+            for (domain, user_list) in table {
+                let Value::Table(user_list) = user_list else {panic!("expecting a table");};
+                println!("domain: {domain:?}\n");
+                for (user, _pwd) in user_list{
+                    println!(" - {user}");
+                }
+                println!("");
             }
         }
     }
